@@ -67,7 +67,9 @@ export const messages = {
     "miniapp.outside.text": "Bu sahifa Telegram'dagi CIMS boti ichida ishlaydi.",
     "miniapp.employee": "Xodim",
     "miniapp.tab.phone": "Telefon",
-    "miniapp.tab.attendance": "Davomat"
+    "miniapp.tab.attendance": "Davomat",
+    "miniapp.phone.no_call_right": "Qo'ng'iroqlarga javob berish va tarixni ko'rish mumkin, lekin rolingizda qo'ng'iroq qilish yo'q.",
+    "miniapp.language": "Til"
   },
   "ru": {
     "common.close": "Закрыть",
@@ -136,7 +138,9 @@ export const messages = {
     "miniapp.outside.text": "Эта страница работает внутри бота CIMS в Telegram.",
     "miniapp.employee": "Сотрудник",
     "miniapp.tab.phone": "Телефон",
-    "miniapp.tab.attendance": "Посещаемость"
+    "miniapp.tab.attendance": "Посещаемость",
+    "miniapp.phone.no_call_right": "Можно отвечать на звонки и смотреть историю, но звонить вашей роли нельзя.",
+    "miniapp.language": "Язык"
   },
   "en": {
     "common.close": "Close",
@@ -205,7 +209,9 @@ export const messages = {
     "miniapp.outside.text": "This page works inside the CIMS bot in Telegram.",
     "miniapp.employee": "Employee",
     "miniapp.tab.phone": "Phone",
-    "miniapp.tab.attendance": "Attendance"
+    "miniapp.tab.attendance": "Attendance",
+    "miniapp.phone.no_call_right": "You can answer calls and see the history, but placing calls is not allowed for your role.",
+    "miniapp.language": "Language"
   }
 } as const
 
