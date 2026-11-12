@@ -4,6 +4,8 @@ Telegram Mini App for Cognilabs CIMS employees:
 
 - **Telefon** — WebRTC calls through the employee's CIMS SIP extension (JsSIP): keypad, lead search by the last digits, recent calls, call notes, full-screen incoming / active call screen.
 - **Davomat** — assigned locations, current state, GPS accuracy and distance, **Keldim / Ketdim** (location-based check-in / check-out). While the app is open, the position is sent every 25 s; nothing runs in the background.
+- **Xarita** — live employee map (Leaflet + OpenStreetMap), only with `capabilities.live_location.view`: `GET /attendance/location-map` plus the `WS /attendance/location-map/ws` socket, opened only once the tab is opened.
+- With `capabilities.calls.edit`, the gear on the Phone tab opens call forwarding (`/telephony/extensions/{user_id}/forwarding-targets`).
 
 Backend contract: `CIMS_MINIAPP_FRONTEND.md` (CIMS backend team).
 
@@ -47,8 +49,10 @@ Employees need their Telegram account linked to their CIMS user, a location assi
 
 ```
 src/
-  miniapp/      MiniAppPage, PhoneTab, CallScreen, AttendanceTab, lib (api, geo, telegram)
-  telephony/    TelephonyEngine (JsSIP line, call events, actions), API service, ringtone
+  miniapp/      MiniAppPage, PhoneTab, CallScreen, AttendanceTab, MapTab, lib (api, geo, telegram)
+  telephony/    TelephonyEngine (JsSIP line, call events, actions), API service, ForwardingTargets, ringtone
+  attendance/   live location map: service (REST + socket), useLiveLocationMap, LiveLocationMap (Leaflet), helpers
+  ui/           Input, SelectField, Switch (same look as the main CIMS app)
   lib/          HTTP client, memory-only session, API errors
   i18n/         uz / ru / en texts (same keys as the main CIMS app)
 ```

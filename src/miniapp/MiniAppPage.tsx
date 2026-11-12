@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { MapPinIcon, PhoneIcon, TelegramLogoIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { MapPinIcon, MapTrifoldIcon, PhoneIcon, TelegramLogoIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { useLocale } from '../i18n/useLocale'
 import type { TelephonyLead } from '../telephony/service'
 import { getApiErrorMessage, getApiErrorStatus } from '../lib/apiError'
@@ -9,8 +9,9 @@ import { TelephonyEngine } from '../telephony/TelephonyEngine'
 import { useTelephony } from '../telephony/context'
 import { AttendanceTab } from './components/AttendanceTab'
 import { CallScreen } from './components/CallScreen'
+import type { MapTab as MapTabView } from './components/MapTab'
 import { PhoneTab } from './components/PhoneTab'
-import { miniApi, type CallsCapability, type MiniUser } from './lib/api'
+import { miniApi, type MiniCapabilities, type MiniUser } from './lib/api'
 import { telephonyService } from '../telephony/service'
 import { haptic, loadTelegramSdk, type TgWebApp } from './lib/telegram'
 
@@ -18,12 +19,31 @@ type Boot =
   | { phase: 'loading' }
   | { phase: 'outside' }
   | { phase: 'error'; message: string; code: number | null }
-  | { phase: 'ready'; user: MiniUser; initData: string; webApp: TgWebApp; expiresIn: number; calls: CallsCapability }
+  | { phase: 'ready'; user: MiniUser; initData: string; webApp: TgWebApp; expiresIn: number; capabilities: MiniCapabilities }
 
-type Tab = 'phone' | 'attendance'
+type Tab = 'phone' | 'attendance' | 'map'
 
 const TAB_KEY = 'cims.miniapp.tab'
 const LANG_FLAG = 'cims.miniapp.lang-v2'
+
+/* Standalone only: the live map (Leaflet) is its own chunk, downloaded the first time the Map tab opens. */
+const MapTab = lazy<typeof MapTabView>(() => import('./components/MapTab').then(
+  (module) => ({ default: module.MapTab }),
+  () => ({ default: MapTabUnavailable }),
+))
+
+/** The map chunk could not be loaded (offline, or a new deploy replaced it): a reload fixes it. */
+function MapTabUnavailable() {
+  const { t } = useLocale()
+  return (
+    <div className="mini-in mx-4 mt-6 rounded-[22px] bg-[var(--surface)] p-6 text-center">
+      <p className="text-[17px] font-bold text-[var(--foreground)]">{t('attendance.loc.map_error', 'Could not load the live map')}</p>
+      <button type="button" onClick={() => window.location.reload()} className="mini-key mt-4 h-11 rounded-[14px] bg-[var(--primary)] px-5 text-[15px] font-semibold text-white">
+        {t('miniapp.retry', 'Try again')}
+      </button>
+    </div>
+  )
+}
 
 /* Visible = the page is shown and Telegram has not put the Mini App in the background. */
 let telegramActive = true
@@ -48,7 +68,10 @@ function applyTelegramTheme(webApp: TgWebApp) {
 }
 
 function readTab(): Tab {
-  try { return sessionStorage.getItem(TAB_KEY) === 'phone' ? 'phone' : 'attendance' } catch { return 'attendance' }
+  try {
+    const value = sessionStorage.getItem(TAB_KEY)
+    return value === 'phone' || value === 'map' ? value : 'attendance'
+  } catch { return 'attendance' }
 }
 
 /** CIMS Telegram Mini App: Phone (WebRTC calls) and Attendance (location check-in / check-out). */
@@ -73,7 +96,7 @@ export function MiniAppPage() {
       try {
         const session = await miniApi.session(initData)
         setMemoryAccessToken(session.access_token)
-        if (alive) setBoot({ phase: 'ready', user: session.user, initData, webApp, expiresIn: session.expires_in, calls: session.calls })
+        if (alive) setBoot({ phase: 'ready', user: session.user, initData, webApp, expiresIn: session.expires_in, capabilities: session.capabilities })
       } catch (cause) {
         if (alive) setBoot({ phase: 'error', message: getApiErrorMessage(cause), code: getApiErrorStatus(cause) })
       }
@@ -149,7 +172,7 @@ export function MiniAppPage() {
     )
   }
 
-  return <ReadyApp user={boot.user} initData={boot.initData} webApp={boot.webApp} sessionCalls={boot.calls} />
+  return <ReadyApp user={boot.user} initData={boot.initData} webApp={boot.webApp} sessionCapabilities={boot.capabilities} />
 }
 
 type PhoneAccess = { state: 'checking' } | { state: 'denied' } | { state: 'allowed'; canCall: boolean; canEdit: boolean }
@@ -159,14 +182,19 @@ type PhoneAccess = { state: 'checking' } | { state: 'denied' } | { state: 'allow
  * is hidden and the SIP line is not even started; `create` is needed to dial, `edit` for call settings.
  * Older backends without capabilities fall back to the RBAC "calls" module.
  */
-function ReadyApp({ user, initData, webApp, sessionCalls }: { user: MiniUser; initData: string; webApp: TgWebApp; sessionCalls: CallsCapability }) {
+function ReadyApp({ user, initData, webApp, sessionCapabilities }: { user: MiniUser; initData: string; webApp: TgWebApp; sessionCapabilities: MiniCapabilities }) {
   const [access, setAccess] = useState<PhoneAccess>({ state: 'checking' })
+  // Live employee map: only with capabilities.live_location.view (its socket never opens otherwise).
+  const [mapAllowed, setMapAllowed] = useState(sessionCapabilities.liveLocation?.view === true)
 
   useEffect(() => {
     let alive = true
     void (async () => {
-      const calls = (await miniApi.callsCapability(initData)) ?? sessionCalls
+      const fresh = await miniApi.capabilities(initData)
       if (!alive) return
+      const live = fresh?.liveLocation ?? sessionCapabilities.liveLocation
+      setMapAllowed(live?.view === true)
+      const calls = fresh?.calls ?? sessionCapabilities.calls
       if (calls) {
         if (!calls.view) { setAccess({ state: 'denied' }); return }
         // The phone line itself (SIP account) still has to exist.
@@ -192,21 +220,21 @@ function ReadyApp({ user, initData, webApp, sessionCalls }: { user: MiniUser; in
       setAccess({ state: 'allowed', canCall: rights?.create ?? true, canEdit: rights?.edit ?? false })
     })()
     return () => { alive = false }
-  }, [initData, sessionCalls])
+  }, [initData, sessionCapabilities])
 
   const phoneAllowed = access.state === 'allowed'
   return (
     <TelephonyEngine userId={user.id} allowed={phoneAllowed} canPlaceCalls={phoneAllowed && access.canCall} webrtcOnly>
-      <MiniShell user={user} initData={initData} webApp={webApp} access={access} />
+      <MiniShell user={user} initData={initData} webApp={webApp} access={access} mapAllowed={mapAllowed} />
     </TelephonyEngine>
   )
 }
 
-function MiniShell({ user, initData, webApp, access }: { user: MiniUser; initData: string; webApp: TgWebApp; access: PhoneAccess }) {
+function MiniShell({ user, initData, webApp, access, mapAllowed }: { user: MiniUser; initData: string; webApp: TgWebApp; access: PhoneAccess; mapAllowed: boolean }) {
   const { t, locale, setLocale } = useLocale()
   const phone = useTelephony()
   const [tab, setTab] = useState<Tab>(readTab)
-  const [opened, setOpened] = useState<Record<Tab, boolean>>(() => ({ phone: readTab() === 'phone', attendance: readTab() === 'attendance' }))
+  const [opened, setOpened] = useState<Record<Tab, boolean>>(() => ({ phone: readTab() === 'phone', attendance: readTab() === 'attendance', map: readTab() === 'map' }))
   const [dialed, setDialed] = useState<string | null>(null)
   const appVisible = useSyncExternalStore(subscribeVisible, readVisible, () => true)
 
@@ -226,8 +254,15 @@ function MiniShell({ user, initData, webApp, access }: { user: MiniUser; initDat
   const initials = ((user.name?.[0] ?? '') + (user.surname?.[0] ?? '')).toUpperCase() || 'C'
   const ready = phone.connection === 'Ready'
   const phoneAllowed = access.state === 'allowed'
-  // Without telephony the app is Attendance only (no tab bar).
-  const current: Tab = phoneAllowed ? tab : 'attendance'
+  // Only the sections this employee may use; a single section means no tab bar.
+  const tabs = ([
+    ...(phoneAllowed ? [['phone', PhoneIcon, t('miniapp.tab.phone', 'Phone')]] : []),
+    ['attendance', MapPinIcon, t('miniapp.tab.attendance', 'Attendance')],
+    ...(mapAllowed ? [['map', MapTrifoldIcon, t('miniapp.tab.map', 'Map')]] : []),
+  ] as Array<[Tab, typeof PhoneIcon, string]>)
+  const current: Tab = tabs.some(([value]) => value === tab) ? tab : 'attendance'
+  const withTabBar = tabs.length > 1
+  const currentIndex = Math.max(0, tabs.findIndex(([value]) => value === current))
   const nextLocale = locale === 'uz' ? 'ru' : locale === 'ru' ? 'en' : 'uz'
 
   return (
@@ -253,25 +288,34 @@ function MiniShell({ user, initData, webApp, access }: { user: MiniUser; initDat
       </header>
 
       {/* Both sections stay mounted (the line keeps ringing, location keeps updating while open). */}
-      <main className={phoneAllowed ? 'pb-[calc(76px+env(safe-area-inset-bottom))]' : 'pb-[env(safe-area-inset-bottom)]'}>
+      <main className={withTabBar ? 'pb-[calc(76px+env(safe-area-inset-bottom))]' : 'pb-[env(safe-area-inset-bottom)]'}>
         {phoneAllowed ? (
           <div className={current === 'phone' ? 'block' : 'hidden'}>
-            {opened.phone ? <PhoneTab active={current === 'phone'} onDial={dial} canCall={access.canCall} /> : null}
+            {opened.phone || current === 'phone' ? <PhoneTab active={current === 'phone'} onDial={dial} canCall={access.canCall} canEdit={access.canEdit} userId={user.id} /> : null}
           </div>
         ) : null}
         <div className={current === 'attendance' ? 'block' : 'hidden'}>
-          {opened.attendance || current === 'attendance' ? <AttendanceTab active={current === 'attendance'} appVisible={appVisible} initData={initData} webApp={webApp} withTabBar={phoneAllowed} /> : null}
+          {opened.attendance || current === 'attendance' ? <AttendanceTab active={current === 'attendance'} appVisible={appVisible} initData={initData} webApp={webApp} withTabBar={withTabBar} /> : null}
         </div>
+        {/* The live map (and its socket) starts only once the tab is opened, and only with the permission. */}
+        {mapAllowed && (opened.map || current === 'map') ? (
+          <div className={current === 'map' ? 'block' : 'hidden'}>
+            <Suspense fallback={<div className="space-y-3 px-4 pt-1"><span className="skeleton block h-9 rounded-full" /><span className="skeleton block h-[46dvh] rounded-[22px]" /></div>}>
+              <MapTab active={current === 'map'} withTabBar={withTabBar} />
+            </Suspense>
+          </div>
+        ) : null}
       </main>
 
       {/* Two big tabs at the bottom — reachable with one thumb (only when the phone is available) */}
-      {phoneAllowed ? <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border)] bg-[var(--surface)]/95 px-3 pt-2 pb-[max(8px,env(safe-area-inset-bottom))] backdrop-blur">
-        <div className="relative mx-auto grid max-w-md grid-cols-2 gap-2">
-          <span aria-hidden="true" className="mini-tab-indicator absolute inset-y-0 w-[calc(50%-4px)] rounded-[16px] bg-[var(--blue-dim)]" style={{ transform: current === 'phone' ? 'translateX(0)' : 'translateX(calc(100% + 8px))' }} />
-          {([
-            ['phone', PhoneIcon, t('miniapp.tab.phone', 'Phone')],
-            ['attendance', MapPinIcon, t('miniapp.tab.attendance', 'Attendance')],
-          ] as const).map(([value, Icon, label]) => (
+      {withTabBar ? <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--border)] bg-[var(--surface)]/95 px-3 pt-2 pb-[max(8px,env(safe-area-inset-bottom))] backdrop-blur">
+        <div className="relative mx-auto grid max-w-md gap-2" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+          <span
+            aria-hidden="true"
+            className="mini-tab-indicator absolute inset-y-0 rounded-[16px] bg-[var(--blue-dim)]"
+            style={{ width: `calc((100% - ${(tabs.length - 1) * 8}px) / ${tabs.length})`, transform: `translateX(calc(${currentIndex} * (100% + 8px)))` }}
+          />
+          {tabs.map(([value, Icon, label]) => (
             <button
               key={value}
               type="button"
